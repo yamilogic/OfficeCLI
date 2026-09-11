@@ -242,29 +242,40 @@ public partial class ExcelHandler
     }
 
     /// <summary>
-    /// Reorder worksheet children to match OpenXML schema sequence.
-    /// Schema: sheetPr, dimension, sheetViews, sheetFormatPr, cols, sheetData,
-    ///   autoFilter, sortState, mergeCells, conditionalFormatting,
-    ///   dataValidations, hyperlinks, printOptions, pageMargins, pageSetup,
-    ///   headerFooter, drawing, legacyDrawing, tableParts, extLst
+    /// Reorder worksheet children to match the CT_Worksheet schema sequence
+    /// (ECMA-376 §18.3.1.99). Runs on every dirty sheet at save.
     /// </summary>
+    // The full CT_Worksheet sequence. This MUST be complete: an element missing
+    // from the table falls to the "unknown" slot after tableParts, and Excel
+    // refuses to open a sheet whose children are out of order. The table used
+    // to stop at drawing/legacyDrawing/tableParts, so a sheet holding a chart
+    // plus <ignoredErrors> (or cellWatches, customProperties, smartTags,
+    // picture, oleObjects, controls, …) came out of ANY edit with those
+    // elements after <drawing> and prompted a repair — issue #389.
+    private static readonly string[] s_ctWorksheetOrder =
+    {
+        "sheetPr", "dimension", "sheetViews", "sheetFormatPr", "cols", "sheetData",
+        "sheetCalcPr", "sheetProtection", "protectedRanges", "scenarios", "autoFilter",
+        "sortState", "dataConsolidate", "customSheetViews", "mergeCells", "phoneticPr",
+        "conditionalFormatting", "dataValidations", "hyperlinks", "printOptions",
+        "pageMargins", "pageSetup", "headerFooter", "rowBreaks", "colBreaks",
+        "customProperties", "cellWatches", "ignoredErrors", "smartTags", "drawing",
+        "legacyDrawing", "legacyDrawingHF", "drawingHF", "picture", "oleObjects",
+        "controls", "webPublishItems", "tableParts", "extLst",
+    };
+
+    private static readonly Dictionary<string, int> s_ctWorksheetRank =
+        s_ctWorksheetOrder.Select((name, i) => (name, i)).ToDictionary(p => p.name, p => p.i);
+
     private static void ReorderWorksheetChildren(Worksheet ws)
     {
-        var order = new Dictionary<string, int>
-        {
-            ["sheetPr"] = 0, ["dimension"] = 1, ["sheetViews"] = 2, ["sheetFormatPr"] = 3,
-            ["cols"] = 4, ["sheetData"] = 5, ["sheetCalcPr"] = 6, ["sheetProtection"] = 7,
-            ["protectedRanges"] = 8, ["scenarios"] = 9, ["autoFilter"] = 10, ["sortState"] = 11,
-            ["dataConsolidate"] = 12, ["customSheetViews"] = 13, ["mergeCells"] = 14,
-            ["phoneticPr"] = 15, ["conditionalFormatting"] = 16, ["dataValidations"] = 17,
-            ["hyperlinks"] = 18, ["printOptions"] = 19, ["pageMargins"] = 20,
-            ["pageSetup"] = 21, ["headerFooter"] = 22, ["rowBreaks"] = 23, ["colBreaks"] = 24,
-            ["drawing"] = 25, ["legacyDrawing"] = 26, ["tableParts"] = 27, ["extLst"] = 99
-        };
-
+        // Unknown (foreign / mc:) children sort just before extLst, keeping their
+        // relative order — OrderBy is stable. Ranks are doubled so the unknown
+        // slot can sit strictly between tableParts and extLst.
+        int unknownRank = s_ctWorksheetRank["extLst"] * 2 - 1;
         var children = ws.ChildElements.ToList();
         var sorted = children
-            .OrderBy(c => order.TryGetValue(c.LocalName, out var idx) ? idx : 50)
+            .OrderBy(c => s_ctWorksheetRank.TryGetValue(c.LocalName, out var idx) ? idx * 2 : unknownRank)
             .ToList();
 
         bool needsReorder = false;
